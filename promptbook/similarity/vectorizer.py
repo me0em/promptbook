@@ -38,13 +38,13 @@ class Vectorizer:
         """ Entry point to all class logic that transform
         an object to callable
         """
-        if type(payload) is str:
+        if isinstance(payload, str):
             tokenizer_output = self.tokenizer(payload,
                                               max_length=512,
                                               padding=True,
                                               truncation=True,
                                               return_tensors='pt')
-            output = self.model(**{k:v.to(self.device) for k,v in tokenizer_output.items()})
+            output = self.model(**{k: v.to(self.device) for k, v in tokenizer_output.items()})
             embeddings = self.average_pool(output.last_hidden_state.detach().cpu(),
                                            tokenizer_output['attention_mask'].detach().cpu())
             embeddings = F.normalize(embeddings, p=2, dim=1)  # normalize embeddings

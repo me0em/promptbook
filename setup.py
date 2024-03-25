@@ -18,7 +18,9 @@ install_requires = [
     "torch",
     "einops",
     "tqdm",
-    "annoy"
+    "annoy",
+    "transformers",
+    "pyarrow"
 ]
 
 # Read the long description from README.md

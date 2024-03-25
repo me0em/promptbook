@@ -28,6 +28,7 @@ Example of working with created database:
 ("Turtles have a long life", "turtles", "Positive")
 >>>
 """
+from typing import Optional, Iterable
 import os
 import pickle
 
@@ -36,6 +37,7 @@ import einops
 from annoy import AnnoyIndex
 
 from .vectorizer import Vectorizer
+from .strategies import Strategy, CentroidAndOutsiderStrategy
 
 
 class SimilarityPlugin:
@@ -44,17 +46,29 @@ class SimilarityPlugin:
     train embeddings dataset to inject them in the prompt
     """
     def __init__(self,
+                 # now storage_path is mandatory
+                 storage_path: str,
+                 # now you can pass vectorizer from outside
+                 vectorizer: Optional[Vectorizer] = None,
+                 instance_name: Optional[str] = "unnamed",
                  vectorizer_batch_size: int = 32,
                  n_trees: int = 100) -> None:
-        self.vectorizer = Vectorizer(batch_size=vectorizer_batch_size)
+        if vectorizer:
+            self.vectorizer = vectorizer
+        else:
+            self.vectorizer = Vectorizer(batch_size=vectorizer_batch_size)
         self.embeddings_size: int = 768
         self.metric = "angular"
         self.n_trees = n_trees
+        self.storage_path = storage_path
 
-        self.storage_path = os.path.join(os.path.dirname(__file__), "storage")
-        self.saved_corpus_name = "saved_embeddings.pickle"  # storage with real items
-        self.saved_index_name = "embedding_index.ann"  # storage with embeddings tree
-        self.corpus: list[dict] = None  # real items, formatted as (text, payload as dict)
+        self.instance_name = instance_name
+        # storage with real items
+        self.saved_corpus_name = f"saved_embeddings_{self.instance_name}.pickle"
+        # storage with embeddings tree
+        self.saved_index_name = f"embedding_index_{self.instance_name}.ann"
+        # real items, formatted as (text, payload as dict)
+        self.corpus: list[dict] = None
 
         self.index = None
 
@@ -86,7 +100,12 @@ class SimilarityPlugin:
         for i, embd in enumerate(embeddings):
             self.index.add_item(i, embd)
         self.index.build(n_trees=self.n_trees)
+
+        # save embeddings
         path_to_save = os.path.join(self.storage_path, self.saved_index_name)
+        if os.path.isdir(self.storage_path) is False:
+            print(f"Try to create directory at {self.storage_path}")
+            os.mkdir(self.storage_path)
         self.index.save(path_to_save)
 
         # Save other data to pickle file
@@ -113,10 +132,40 @@ class SimilarityPlugin:
         return noisy_tensor
 
     def process(self,
-                data: str,
-                k: int = 3,
-                permutation: bool = True,
-                noise_std: float = 0.01) -> list[dict]:
+                data: str | Iterable,
+                **kwargs):
+        """Routes data to the appropriate processing method based on its type.
+
+        This method dynamically directs the input to either `process_one` or `process_many`
+        depending on whether the input is a single string or an iterable of strings, respectively.
+
+        Args:
+            data (str | Iterable): The data to be processed.
+                Can be a single string or an iterable of strings.
+            **kwargs: Arbitrary keyword arguments that are forwarded
+                to the processing method.
+
+        Returns:
+            The result of the processing, which varies based on the
+                input type and the specific
+            processing methods implemented by `process_one` and `process_many`.
+
+        Raises:
+            TypeError: If `data` is neither a string nor an iterable of strings.
+
+        """
+        if isinstance(data, str):
+            return self.process_one(data, **kwargs)
+        if hasattr(data, '__iter__'):
+            return self.process_many(data, **kwargs)
+
+        raise TypeError("data should be str or Iterable[str]")
+
+    def process_one(self,
+                    data: str,
+                    k: int = 3,
+                    permutation: bool = True,
+                    noise_std: float = 0.01) -> list[dict]:
         """ Find k nearest neighbors by given target embedding. Items
         stores as list of dict by default, but you can extract what you
         want with in a format you want with self.return_format_fn function.
@@ -139,3 +188,60 @@ class SimilarityPlugin:
         formatted_neighbors = [self.return_format_fn(i) for i in neighbors]
 
         return formatted_neighbors
+
+    def process_many(self,
+                     data: Iterable[str],
+                     strategy: Optional[str],
+                     strategy_object: Optional[Strategy],
+                     vectorizing_strategy: callable) -> list[dict]:
+        """ Find k nearest neighbors by given target embedding. Items
+        stores as list of dict by default, but you can extract what you
+        want with in a format you want with self.return_format_fn function.
+        """
+        if self.index is None:
+            self.index = self.load_index()
+
+        embds: list[torch.Tensor] = self.vectorize_many(
+            vectorizing_strategy,
+            data
+        )
+
+        embds: torch.Tensor = torch.cat(embds)
+
+        # You can use different strategies to pick a points
+        # which will be processed in 'find a similar' task
+        #
+        # Currently you can use ready-made strategies by
+        # passing string arg `strategy`:
+        # - centroid_outsider: pick centroid and the most remote point
+        #
+        # Or you can pass your own strategy with arg `strategy_object`,
+        # for that you should inherit from promptbook.similarity.strategies.Strategy
+        match strategy:
+            case "centroid_outsider":  # default
+                used_strategy: Strategy = CentroidAndOutsiderStrategy(embds)
+                indexes = used_strategy.run().values()
+
+            case None:
+                if strategy_object is None:
+                    raise ValueError("Use strategy or strategy_object arguments")
+                raise NotImplementedError("TODO: custom strategies")
+
+        neighbor_ids = []
+        for idx in indexes:
+            emb = embds[idx]
+            neighbor_id = self.index.get_nns_by_vector(emb, n=1, include_distances=False)
+            neighbor_ids.extend(neighbor_id)
+
+        if self.corpus is None:
+            self._load_corpus()
+
+        neighbors = [self.corpus[idx] for idx in neighbor_ids]
+        formatted_neighbors = [self.return_format_fn(i) for i in neighbors]
+
+        return formatted_neighbors
+
+    def vectorize_many(self, vectorizing_strategy: callable, data: Iterable) -> torch.Tensor:
+        """ Wrap user vectorizing_strategy function to pass self.vectorizer inside
+        """
+        return vectorizing_strategy(self.vectorizer, data)
