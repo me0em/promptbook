@@ -1,4 +1,4 @@
-# promptbook
+# promptbook v2.0
 Use this lib to build LLM prompts with examples.
 
 ## Quick Start
