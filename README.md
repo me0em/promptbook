@@ -27,5 +27,32 @@ Use this lib to build LLM prompts with examples.
 >>> sp.process("The king is dead, long live the king!", k=1, permutation=True, noise_std=0.01)
 ("Turtles have a long life", "turtles", "Positive")
 ```
-## TODO
-TODO
+### Process many queries in the same time
+Let's assume we have a custom data we need to process batch by batch
+
+Firstly, we need to write function to process our customo data
+## Vectorization
+```python
+def vectorizing_strategy(vectorizer, data):
+  """ Our strategy to vectorize batches"""
+  embds = []
+  for row in data:
+    post_embd: str = vectorizer(row["post_text"])
+    layer1_embd = vectorizer(row["parent_comment_text"])
+    layer2_embd = vectorizer(row["comment_text"])
+    embd = SIGMA * post_embd + OMEGA * layer1_embd + GAMMA * layer2_embd
+    embds.append(embd)
+  return embds
+```
+Next we can process our batch
+
+```python
+similar_items = sp.process(
+    batch,
+    vectorizing_strategy=vectorizing_strategy,
+    strategy="centroid_outsider",
+    strategy_object=None
+)
+```
+
+You can pass custom `strategy_object` (inherit from `promptbook.similarity.strategies.Strategy`)
